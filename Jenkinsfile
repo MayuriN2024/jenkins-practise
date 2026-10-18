@@ -9,18 +9,6 @@ pipeline {
             }
         }
 
-        stage('Create Dockerfile') {
-            steps {
-                sh '''
-cat > Dockerfile <<'EOF'
-FROM nginx:alpine
-COPY index.html /usr/share/nginx/html/index.html
-EXPOSE 80
-EOF
-                '''
-            }
-        }
-
         stage('Build Image') {
             steps {
                 sh 'docker build -t hello-world-app:${BUILD_NUMBER} .'
