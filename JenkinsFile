@@ -1,0 +1,144 @@
+
+pipeline {
+    agent any
+
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+    }
+
+    parameters {
+        choice(
+            name: 'ACTION',
+            choices: ['PLAN', 'APPLY', 'DESTROY'],
+            description: 'Choose the Terraform operation'
+        )
+    }
+
+    environment {
+        TF_IN_AUTOMATION = 'true'
+        TF_INPUT = 'false'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Check Tools and AWS Identity') {
+            steps {
+                sh '''
+                    set -eu
+                    terraform version
+                    aws --version
+                    aws sts get-caller-identity
+                '''
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                dir('terraform') {
+                    sh 'terraform init -input=false'
+                }
+            }
+        }
+
+        stage('Terraform Validate') {
+            steps {
+                dir('terraform') {
+                    sh 'terraform validate'
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                dir('terraform') {
+                    withEnv([
+                        "TF_VAR_allowed_ssh_cidr=${params.ALLOWED_SSH_CIDR}"
+                    ]) {
+                        sh '''
+                            terraform plan \
+                              -input=false \
+                              -out=tfplan
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Approval') {
+            when {
+                expression {
+                    params.ACTION == 'APPLY' ||
+                    params.ACTION == 'DESTROY'
+                }
+            }
+            steps {
+                script {
+                    input message: (
+                        "Approve Terraform ${params.ACTION}? " +
+                        "Review the previous plan and confirm the intended action."
+                    ), ok: 'Approve'
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            when {
+                expression { params.ACTION == 'APPLY' }
+            }
+            steps {
+                dir('terraform') {
+                    sh 'terraform apply -input=false tfplan'
+                }
+            }
+        }
+
+        stage('Terraform Destroy') {
+            when {
+                expression { params.ACTION == 'DESTROY' }
+            }
+            steps {
+                dir('terraform') {
+                    withEnv([
+                        "TF_VAR_allowed_ssh_cidr=${params.ALLOWED_SSH_CIDR}"
+                    ]) {
+                        sh '''
+                            terraform plan \
+                              -destroy \
+                              -input=false \
+                              -out=destroy.tfplan
+                            terraform show destroy.tfplan
+                            terraform apply -input=false destroy.tfplan
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Verify Website') {
+            when {
+                expression { params.ACTION == 'APPLY' }
+            }
+            steps {
+                dir('terraform') {
+                    sh '''
+                        terraform output
+                        echo "The instance was created."
+                        echo "Allow a few minutes for the web server to start."
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Terraform pipeline finished. Review the build log.'
+        }
+    }
+}
